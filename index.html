@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Список дел</title>
+  <style>
+    :root {
+      --bg: #f4f2ee;
+      --card: #ffffff;
+      --text: #1f1d1a;
+      --muted: #8a857c;
+      --line: #e6e2da;
+      --accent: #d9774b;
+      --done: #b5afa4;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1a1917;
+        --card: #24221f;
+        --text: #ece8e1;
+        --muted: #8f897f;
+        --line: #35322d;
+        --accent: #e58a5f;
+        --done: #6b665e;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+      display: flex;
+      justify-content: center;
+      padding: 48px 16px;
+    }
+    .app { width: 100%; max-width: 560px; }
+    h1 { margin: 0 0 20px; font-size: 32px; }
+    form { display: flex; gap: 8px; margin-bottom: 16px; }
+    input[type="text"] {
+      flex: 1;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--card);
+      color: var(--text);
+      font: inherit;
+    }
+    input[type="text"]:focus { outline: 2px solid var(--accent); border-color: transparent; }
+    button {
+      font: inherit;
+      cursor: pointer;
+      border: none;
+      border-radius: 10px;
+    }
+    .add { padding: 0 18px; background: var(--accent); color: #fff; font-weight: 600; }
+    .list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .list li {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 14px;
+      border-top: 1px solid var(--line);
+    }
+    .list li:first-child { border-top: none; }
+    .list input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent); cursor: pointer; }
+    .list span { flex: 1; word-break: break-word; }
+    .list li.done span { color: var(--done); text-decoration: line-through; }
+    .delete { background: none; color: var(--muted); font-size: 20px; line-height: 1; padding: 4px 8px; }
+    .delete:hover { color: var(--accent); }
+    .empty { padding: 24px; text-align: center; color: var(--muted); }
+    .footer {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .filters { display: flex; gap: 4px; }
+    .filters button, .clear { background: none; color: var(--muted); padding: 4px 8px; font-size: 14px; }
+    .filters button.active { background: var(--card); color: var(--text); border: 1px solid var(--line); }
+    .clear:hover { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <h1>Список дел</h1>
+
+    <form id="form">
+      <input id="input" type="text" placeholder="Что нужно сделать?" autocomplete="off" autofocus>
+      <button class="add" type="submit">Добавить</button>
+    </form>
+
+    <ul class="list" id="list"></ul>
+
+    <div class="footer">
+      <span id="count"></span>
+      <div class="filters">
+        <button data-filter="all" class="active">Все</button>
+        <button data-filter="active">Активные</button>
+        <button data-filter="done">Готовые</button>
+      </div>
+      <button class="clear" id="clear">Удалить готовые</button>
+    </div>
+  </main>
+
+  <script>
+    const STORAGE_KEY = "todos";
+
+    let todos = load();
+    let filter = "all";
+
+    const form = document.getElementById("form");
+    const input = document.getElementById("input");
+    const list = document.getElementById("list");
+    const count = document.getElementById("count");
+
+    function load() {
+      try {
+        return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+      } catch {
+        return [];
+      }
+    }
+
+    function save() {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(todos));
+      } catch {}
+    }
+
+    function plural(n) {
+      const mod10 = n % 10, mod100 = n % 100;
+      if (mod10 === 1 && mod100 !== 11) return "задача";
+      if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "задачи";
+      return "задач";
+    }
+
+    function render() {
+      const visible = todos.filter(t =>
+        filter === "all" ? true : filter === "done" ? t.done : !t.done
+      );
+
+      list.innerHTML = "";
+      if (visible.length === 0) {
+        const li = document.createElement("li");
+        li.className = "empty";
+        li.textContent = todos.length === 0 ? "Пока пусто — добавьте первую задачу" : "Здесь ничего нет";
+        list.appendChild(li);
+      }
+
+      for (const todo of visible) {
+        const li = document.createElement("li");
+        if (todo.done) li.classList.add("done");
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = todo.done;
+        checkbox.addEventListener("change", () => {
+          todo.done = checkbox.checked;
+          save();
+          render();
+        });
+
+        const text = document.createElement("span");
+        text.textContent = todo.text;
+
+        const del = document.createElement("button");
+        del.className = "delete";
+        del.textContent = "×";
+        del.title = "Удалить";
+        del.addEventListener("click", () => {
+          todos = todos.filter(t => t.id !== todo.id);
+          save();
+          render();
+        });
+
+        li.append(checkbox, text, del);
+        list.appendChild(li);
+      }
+
+      const left = todos.filter(t => !t.done).length;
+      count.textContent = `Осталось: ${left} ${plural(left)}`;
+    }
+
+    form.addEventListener("submit", e => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      todos.push({ id: Date.now(), text, done: false });
+      input.value = "";
+      save();
+      render();
+    });
+
+    document.querySelectorAll(".filters button").forEach(btn => {
+      btn.addEventListener("click", () => {
+        filter = btn.dataset.filter;
+        document.querySelectorAll(".filters button").forEach(b => b.classList.toggle("active", b === btn));
+        render();
+      });
+    });
+
+    document.getElementById("clear").addEventListener("click", () => {
+      todos = todos.filter(t => !t.done);
+      save();
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>
