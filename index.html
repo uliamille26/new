@@ -93,11 +93,35 @@
     .filters button, .clear { background: none; color: var(--muted); padding: 4px 8px; font-size: 14px; }
     .filters button.active { background: var(--card); color: var(--text); border: 1px solid var(--line); }
     .clear:hover { color: var(--accent); }
+    .sync {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .sync[hidden] { display: none; }
+    .sync button {
+      padding: 6px 12px;
+      background: var(--card);
+      color: var(--text);
+      border: 1px solid var(--line);
+      font-size: 14px;
+    }
+    .sync button:hover { border-color: var(--accent); }
   </style>
+  <script src="https://accounts.google.com/gsi/client" async></script>
 </head>
 <body>
   <main class="app">
     <h1>Список дел</h1>
+
+    <div class="sync" id="sync" hidden>
+      <span id="syncStatus">Задачи хранятся только в этом браузере</span>
+      <button id="syncButton" type="button">Войти через Google</button>
+    </div>
 
     <form id="form">
       <input id="input" type="text" placeholder="Что нужно сделать?" autocomplete="off" autofocus>
@@ -120,6 +144,11 @@
   <script>
     const STORAGE_KEY = "todos";
 
+    // Пропуск для Google Диска (OAuth Client ID). Пока пусто — синхронизация выключена.
+    const GOOGLE_CLIENT_ID = "";
+    const DRIVE_FILE_NAME = "todos.json";
+    const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+
     let todos = load();
     let filter = "all";
 
@@ -140,7 +169,143 @@
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(todos));
       } catch {}
+      scheduleDriveSave();
     }
+
+    // ---------- Google Диск ----------
+
+    const sync = document.getElementById("sync");
+    const syncStatus = document.getElementById("syncStatus");
+    const syncButton = document.getElementById("syncButton");
+
+    let tokenClient = null;
+    let accessToken = null;
+    let driveFileId = null;
+    let saveTimer = null;
+
+    function setStatus(text, buttonText) {
+      syncStatus.textContent = text;
+      syncButton.hidden = !buttonText;
+      if (buttonText) syncButton.textContent = buttonText;
+    }
+
+    async function drive(url, options = {}) {
+      const res = await fetch(url, {
+        ...options,
+        headers: { Authorization: `Bearer ${accessToken}`, ...(options.headers || {}) },
+      });
+      if (res.status === 401) {
+        accessToken = null;
+        setStatus("Вход в Google истёк", "Войти снова");
+        throw new Error("unauthorized");
+      }
+      if (!res.ok) throw new Error(`Drive ${res.status}`);
+      return res;
+    }
+
+    async function findDriveFile() {
+      const q = encodeURIComponent(`name='${DRIVE_FILE_NAME}' and trashed=false`);
+      const res = await drive(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)&spaces=drive`);
+      const data = await res.json();
+      return data.files.length ? data.files[0].id : null;
+    }
+
+    async function createDriveFile() {
+      const form = new FormData();
+      form.append("metadata", new Blob([JSON.stringify({ name: DRIVE_FILE_NAME, mimeType: "application/json" })], { type: "application/json" }));
+      form.append("file", new Blob([JSON.stringify(todos)], { type: "application/json" }));
+      const res = await drive("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", {
+        method: "POST",
+        body: form,
+      });
+      return (await res.json()).id;
+    }
+
+    async function loadFromDrive() {
+      if (!accessToken || !driveFileId) return;
+      setStatus("Загружаю с Google Диска…");
+      const res = await drive(`https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`);
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        todos = data;
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(todos)); } catch {}
+        render();
+      }
+      setStatus("Сохраняется на Google Диск ✓");
+    }
+
+    function scheduleDriveSave() {
+      if (!accessToken || !driveFileId) return;
+      clearTimeout(saveTimer);
+      setStatus("Сохраняю…");
+      saveTimer = setTimeout(async () => {
+        saveTimer = null;
+        try {
+          await drive(`https://www.googleapis.com/upload/drive/v3/files/${driveFileId}?uploadType=media`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(todos),
+          });
+          setStatus("Сохраняется на Google Диск ✓");
+        } catch (e) {
+          if (e.message !== "unauthorized") setStatus("Не удалось сохранить", "Повторить");
+        }
+      }, 500);
+    }
+
+    async function connectDrive() {
+      try {
+        driveFileId = await findDriveFile();
+        if (driveFileId) {
+          await loadFromDrive();
+        } else {
+          driveFileId = await createDriveFile();
+          setStatus("Сохраняется на Google Диск ✓");
+        }
+        try { localStorage.setItem("driveConnected", "1"); } catch {}
+      } catch (e) {
+        if (e.message !== "unauthorized") setStatus("Не удалось подключиться к Google Диску", "Повторить");
+      }
+    }
+
+    function initDrive() {
+      if (!GOOGLE_CLIENT_ID || !window.google?.accounts?.oauth2) return;
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: DRIVE_SCOPE,
+        callback: response => {
+          if (response.error) {
+            setStatus("Вход отменён", "Войти через Google");
+            return;
+          }
+          accessToken = response.access_token;
+          if (driveFileId) scheduleDriveSave();
+          else connectDrive();
+        },
+      });
+      sync.hidden = false;
+      let wasConnected = false;
+      try { wasConnected = localStorage.getItem("driveConnected") === "1"; } catch {}
+      setStatus(
+        wasConnected ? "Войдите, чтобы увидеть задачи с других устройств" : "Задачи хранятся только в этом браузере",
+        wasConnected ? "Войти" : "Войти через Google"
+      );
+    }
+
+    syncButton.addEventListener("click", () => {
+      if (accessToken && driveFileId) {
+        scheduleDriveSave();
+        return;
+      }
+      tokenClient?.requestAccessToken({ prompt: "" });
+    });
+
+    // Когда возвращаемся на вкладку — подтягиваем изменения с других устройств.
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && !saveTimer) loadFromDrive().catch(() => {});
+    });
+
+    window.addEventListener("load", initDrive);
 
     function plural(n) {
       const mod10 = n % 10, mod100 = n % 100;
